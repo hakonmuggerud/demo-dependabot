@@ -1,0 +1,146 @@
+name: Claude Dependabot PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  claude-review:
+    # Only run for Dependabot PRs
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Claude Dependabot Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: 'dependabot[bot]'
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR_NUMBER: ${{ github.event.pull_request.number }}
+
+            You are an expert dependency management and security analyst. You are reviewing Dependabot pull request #${{ github.event.pull_request.number }} in the ${{ github.repository }} repository.
+
+            ## Instructions
+
+            1. Gather PR information using `gh pr view ${{ github.event.pull_request.number }}` and `gh pr diff ${{ github.event.pull_request.number }}`
+            2. Extract the package name(s), current version(s), and target version(s)
+            3. Identify the version bump type (patch/minor/major) following semver
+            4. Check CI status with `gh pr checks ${{ github.event.pull_request.number }}` (note: most CI checks skip for Dependabot PRs in this project -- SonarQube, Lighthouse, Certificate check, PR name lint, and backend deploy are all skipped. The commit-check workflow DOES run and covers lint, test, TypeScript type-check, and build)
+            5. Fetch and review the changelog or release notes. Try these approaches in order:
+               - Check the package's GitHub releases: `gh release list -R <owner>/<repo> -L 10`
+               - Use WebFetch to read the changelog from the package's GitHub repository
+               - Use WebFetch on `https://www.npmjs.com/package/<package-name>` for package info
+               - Use WebSearch to find changelog or breaking changes information
+               - If changelog is unavailable from any source, note this limitation
+            6. For major version updates, search the codebase for import statements and usage patterns of the package. Cross-reference usage with documented breaking changes.
+            7. Check for security advisories (CVEs) being addressed
+            8. Assess codebase impact
+
+            ## Project Context
+
+            This is the Attraktor/Videocation platform -- a monorepo with:
+            - `/frontend` -- npm workspaces with `apps/client`, `apps/backoffice`, and `libs/shared`
+            - `/backend` -- Express.js + GraphQL API
+            - `/lambdaatedge` -- CloudFront Lambda@Edge functions
+            - Node.js v20
+
+            ### Dependabot Configuration
+
+            | Directory | PR Limit | Groups |
+            |-----------|----------|--------|
+            | `/backend` | 10 | eslint, babel, aws-sdk |
+            | `/frontend` | 10 | appsignal, dnd-kit, emotion, eslint, mui, storybook, stripe, testing-library |
+            | `/lambdaatedge` | 0 (disabled) | eslint, aws-sdk |
+            | `/` (root) | 10 | eslint, commitlint |
+
+            **Intentionally ignored major updates:**
+            - Frontend: react, react-dom, styled-components, @mui/*, eslint, serverless, flickity, @testing-library/react
+            - Backend: nanoid, eslint
+            - Lambda@Edge: eslint, serverless
+
+            If a PR updates a package that should be in the ignore list, flag this.
+
+            ## Review Depth by Bump Type
+
+            **Patch updates:** Focus on changelog, security fixes, and behavioral changes. Some packages don't follow semver strictly.
+
+            **Minor updates:** All of the above, plus check for deprecation warnings, new peer dependency requirements, and verify changes align with the bump type.
+
+            **Major updates:** All of the above, plus:
+            - Search codebase for all imports and usage patterns of the package
+            - Cross-reference usage with documented breaking changes
+            - Look for migration guides
+            - Assess scope of code changes required
+            - Check transitive dependency impacts
+
+            ## Grouped Updates
+
+            If the PR updates multiple packages (common with dependabot groups), analyze each package individually and then assess the combined impact.
+
+            ## Output
+
+            Post your complete review as a **single PR comment** using:
+            ```
+            gh pr comment ${{ github.event.pull_request.number }} --body "<your review>"
+            ```
+
+            Use this exact format for the comment:
+
+            ```
+            ## Dependabot PR Review
+
+            **Summary**: <One-line verdict: Ready to merge / Needs review / Requires code changes>
+
+            **Package(s)**: <name(s)> <old version> -> <new version> (<bump type>)
+
+            **Risk Level**: <Low/Medium/High> -- <brief justification>
+
+            ### Key Changes
+            - <bullet points of notable changes from changelog>
+
+            ### Breaking Changes
+            <list any breaking changes identified, or "None identified">
+
+            ### Codebase Impact
+            <For major updates: which files/patterns are affected. For minor/patch: brief note>
+
+            ### Security
+            <Any CVEs addressed or security improvements, or "No security advisories">
+
+            ### CI Status
+            <Status of commit-check workflow. Note that other checks are skipped for Dependabot>
+
+            ### Recommendation
+            <Specific actions needed before merging, or "Safe to merge">
+
+            ### Testing Suggestions
+            <Areas that should be manually tested, if applicable>
+
+            ---
+            *Automated review by Claude via [claude-code-action](https://github.com/anthropics/claude-code-action)*
+            ```
+
+            Do NOT submit review text as messages. ONLY post your review via `gh pr comment`.
+
+          claude_args: >-
+            --max-turns 15
+            --model claude-sonnet-4-5-20250929
+            --allowedTools
+            "WebSearch,WebFetch,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh release list:*),Bash(gh release view:*),Bash(gh api:*),Bash(npm view:*),Bash(npm ls:*),Bash(npm audit:*),Bash(npm explain:*),Read,Glob,Grep"
+
